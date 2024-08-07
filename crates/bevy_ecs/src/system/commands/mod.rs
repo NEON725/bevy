@@ -3,7 +3,7 @@ mod parallel_scope;
 use super::{Deferred, IntoObserverSystem, IntoSystem, RegisterSystem, Resource};
 use crate::{
     self as bevy_ecs,
-    bundle::Bundle,
+    bundle::{Bundle, InsertMode},
     component::ComponentId,
     entity::{Entities, Entity},
     event::Event,
@@ -894,6 +894,7 @@ impl EntityCommands<'_> {
     /// Adds a [`Bundle`] of components to the entity.
     ///
     /// This will overwrite any previous value(s) of the same component type.
+    /// See [`EntityCommands::insert_if_new`] to keep the old value instead.
     ///
     /// # Panics
     ///
@@ -943,7 +944,22 @@ impl EntityCommands<'_> {
     /// # bevy_ecs::system::assert_is_system(add_combat_stats_system);
     /// ```
     pub fn insert(&mut self, bundle: impl Bundle) -> &mut Self {
-        self.add(insert(bundle))
+        self.add(insert(bundle, InsertMode::Replace))
+    }
+
+    /// Adds a [`Bundle`] of components to the entity.
+    ///
+    /// This is the same as [`insert`], but in case of duplicate components
+    /// will leave the old values instead of replacing them with new ones.
+    ///
+    /// # Panics
+    ///
+    /// The command will panic when applied if the associated entity does not exist.
+    ///
+    /// To avoid a panic in this case, use the command [`Self::try_insert`] instead.
+    /// ```
+    pub fn insert_if_new(&mut self, bundle: impl Bundle) -> &mut Self {
+        self.add(insert(bundle, InsertMode::Keep))
     }
 
     /// Tries to add a [`Bundle`] of components to the entity.
@@ -995,7 +1011,7 @@ impl EntityCommands<'_> {
     /// # bevy_ecs::system::assert_is_system(add_combat_stats_system);
     /// ```
     pub fn try_insert(&mut self, bundle: impl Bundle) -> &mut Self {
-        self.add(try_insert(bundle))
+        self.add(try_insert(bundle, InsertMode::Replace))
     }
 
     /// Removes a [`Bundle`] of components from the entity.
@@ -1242,10 +1258,17 @@ fn despawn(entity: Entity, world: &mut World) {
 }
 
 /// An [`EntityCommand`] that adds the components in a [`Bundle`] to an entity.
-fn insert<T: Bundle>(bundle: T) -> impl EntityCommand {
+#[track_caller]
+fn insert<T: Bundle>(bundle: T, mode: InsertMode) -> impl EntityCommand {
+    let caller = core::panic::Location::caller();
     move |entity: Entity, world: &mut World| {
         if let Some(mut entity) = world.get_entity_mut(entity) {
-            entity.insert(bundle);
+            entity.insert_with_caller(
+                bundle,
+                mode,
+                #[cfg(feature = "track_change_detection")]
+                caller,
+            );
         } else {
             panic!("error[B0003]: Could not insert a bundle (of type `{}`) for entity {:?} because it doesn't exist in this World. See: https://bevyengine.org/learn/errors/#b0003", std::any::type_name::<T>(), entity);
         }
@@ -1253,10 +1276,19 @@ fn insert<T: Bundle>(bundle: T) -> impl EntityCommand {
 }
 
 /// An [`EntityCommand`] that attempts to add the components in a [`Bundle`] to an entity.
-fn try_insert(bundle: impl Bundle) -> impl EntityCommand {
+/// Does nothing if the entity does not exist.
+#[track_caller]
+fn try_insert(bundle: impl Bundle, mode: InsertMode) -> impl EntityCommand {
+    #[cfg(feature = "track_change_detection")]
+    let caller = core::panic::Location::caller();
     move |entity, world: &mut World| {
         if let Some(mut entity) = world.get_entity_mut(entity) {
-            entity.insert(bundle);
+            entity.insert_with_caller(
+                bundle,
+                mode,
+                #[cfg(feature = "track_change_detection")]
+                caller,
+            );
         }
     }
 }

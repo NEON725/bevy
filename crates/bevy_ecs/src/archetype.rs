@@ -111,7 +111,7 @@ impl ArchetypeId {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) enum ComponentStatus {
     Added,
-    Mutated,
+    Existing,
 }
 
 pub(crate) struct AddBundle {

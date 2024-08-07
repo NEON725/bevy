@@ -298,6 +298,13 @@ impl SparseSetIndex for BundleId {
     }
 }
 
+// What to do on insertion if component already exists
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum InsertMode {
+    Replace,
+    Keep,
+}
+
 /// Stores metadata associated with a specific type of [`Bundle`] for a given [`World`].
 ///
 /// [`World`]: crate::world::World
@@ -401,6 +408,8 @@ impl BundleInfo {
         table_row: TableRow,
         change_tick: Tick,
         bundle: T,
+        insert_mode: InsertMode,
+        #[cfg(feature = "track_change_detection")] caller: &'static Location<'static>,
     ) {
         // NOTE: get_components calls this closure on each component in "bundle order".
         // bundle_info.component_ids are also in "bundle order"
@@ -415,12 +424,27 @@ impl BundleInfo {
                         unsafe { table.get_column_mut(component_id).debug_checked_unwrap() };
                     // SAFETY: bundle_component is a valid index for this bundle
                     let status = unsafe { bundle_component_status.get_status(bundle_component) };
-                    match status {
-                        ComponentStatus::Added => {
-                            column.initialize(table_row, component_ptr, change_tick);
+                    match (status, insert_mode) {
+                        (ComponentStatus::Added, _) => {
+                            column.initialize(
+                                table_row,
+                                component_ptr,
+                                change_tick,
+                                #[cfg(feature = "track_change_detection")]
+                                caller,
+                            );
                         }
-                        ComponentStatus::Mutated => {
-                            column.replace(table_row, component_ptr, change_tick);
+                        (ComponentStatus::Existing, InsertMode::Replace) => {
+                            column.replace(
+                                table_row,
+                                component_ptr,
+                                change_tick,
+                                #[cfg(feature = "track_change_detection")]
+                                caller,
+                            );
+                        }
+                        (ComponentStatus::Existing, InsertMode::Keep) => {
+                            column.drop(component_ptr);
                         }
                     }
                 }
@@ -460,7 +484,7 @@ impl BundleInfo {
         let current_archetype = &mut archetypes[archetype_id];
         for component_id in self.component_ids.iter().cloned() {
             if current_archetype.contains(component_id) {
-                bundle_status.push(ComponentStatus::Mutated);
+                bundle_status.push(ComponentStatus::Existing);
             } else {
                 bundle_status.push(ComponentStatus::Added);
                 added.push(component_id);
@@ -661,10 +685,15 @@ impl<'w> BundleInserter<'w> {
         entity: Entity,
         location: EntityLocation,
         bundle: T,
+        insert_mode: InsertMode,
+        #[cfg(feature = "track_change_detection")] caller: &'static core::panic::Location<'static>,
     ) -> EntityLocation {
         let bundle_info = self.bundle_info.as_ref();
         let add_bundle = self.add_bundle.as_ref();
         let table = self.table.as_mut();
+
+        // SAFETY: Archetype gets borrowed when running the on_replace observers above,
+        // so this reference can only be promoted from shared to &mut down here, after they have been ran
         let archetype = self.archetype.as_mut();
 
         let (new_archetype, new_location) = match &mut self.result {
@@ -683,6 +712,9 @@ impl<'w> BundleInserter<'w> {
                     location.table_row,
                     self.change_tick,
                     bundle,
+                    insert_mode,
+                    #[cfg(feature = "track_change_detection")]
+                    caller,
                 );
 
                 (archetype, location)
@@ -721,6 +753,9 @@ impl<'w> BundleInserter<'w> {
                     result.table_row,
                     self.change_tick,
                     bundle,
+                    insert_mode,
+                    #[cfg(feature = "track_change_detection")]
+                    caller,
                 );
 
                 (new_archetype, new_location)
@@ -800,6 +835,9 @@ impl<'w> BundleInserter<'w> {
                     move_result.new_row,
                     self.change_tick,
                     bundle,
+                    insert_mode,
+                    #[cfg(feature = "track_change_detection")]
+                    caller,
                 );
 
                 (new_archetype, new_location)
@@ -918,6 +956,9 @@ impl<'w> BundleSpawner<'w> {
                 table_row,
                 self.change_tick,
                 bundle,
+                InsertMode::Replace,
+                #[cfg(feature = "track_change_detection")]
+                caller,
             );
             entities.set(entity.index(), location);
             location
@@ -1138,6 +1179,9 @@ mod tests {
     #[derive(Component)]
     struct D;
 
+    #[derive(Component, Eq, PartialEq, Debug)]
+    struct V(&'static str); // component with a value
+
     #[derive(Resource, Default)]
     struct R(usize);
 
@@ -1186,7 +1230,7 @@ mod tests {
         entity.insert(A);
         entity.remove::<A>();
         entity.flush();
-        assert_eq!(3, world.resource::<R>().0);
+        assert_eq!(4, world.resource::<R>().0);
     }
 
     #[test]
@@ -1253,5 +1297,20 @@ mod tests {
 
         world.spawn(A).flush();
         assert_eq!(4, world.resource::<R>().0);
+    }
+
+    #[test]
+    fn insert_if_new() {
+        let mut world = World::new();
+        world.init_resource::<R>();
+        let id = world.spawn(V("one")).id();
+        let mut entity = world.entity_mut(id);
+        entity.insert_if_new(V("two"));
+        entity.insert_if_new((A, V("three")));
+        entity.flush();
+        // should still contain "one"
+        let entity = world.entity(id);
+        assert!(entity.contains::<A>());
+        assert_eq!(entity.get(), Some(&V("one")));
     }
 }

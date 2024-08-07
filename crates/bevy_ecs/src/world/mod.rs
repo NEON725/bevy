@@ -24,7 +24,7 @@ pub use spawn_batch::*;
 
 use crate::{
     archetype::{ArchetypeComponentId, ArchetypeId, ArchetypeRow, Archetypes},
-    bundle::{Bundle, BundleInfo, BundleInserter, BundleSpawner, Bundles},
+    bundle::{Bundle, BundleInfo, BundleInserter, BundleSpawner, Bundles, InsertMode},
     change_detection::{MutUntyped, TicksMut},
     component::{
         Component, ComponentDescriptor, ComponentHooks, ComponentId, ComponentInfo, ComponentTicks,
@@ -38,8 +38,7 @@ use crate::{
     schedule::{Schedule, ScheduleLabel, Schedules},
     storage::{ResourceData, Storages},
     system::{Commands, Res, Resource},
-    world::command_queue::RawCommandQueue,
-    world::error::TryRunScheduleError,
+    world::{command_queue::RawCommandQueue, error::TryRunScheduleError},
 };
 use bevy_ptr::{OwningPtr, Ptr};
 use bevy_utils::tracing::warn;
@@ -1789,7 +1788,16 @@ impl World {
                             if location.archetype_id == archetype =>
                         {
                             // SAFETY: `entity` is valid, `location` matches entity, bundle matches inserter
-                            unsafe { inserter.insert(entity, location, bundle) };
+                            unsafe {
+                                inserter.insert(
+                                    entity,
+                                    location,
+                                    bundle,
+                                    InsertMode::Replace,
+                                    #[cfg(feature = "track_change_detection")]
+                                    caller,
+                                )
+                            };
                         }
                         _ => {
                             // SAFETY: we initialized this bundle_id in `init_info`
@@ -1802,7 +1810,16 @@ impl World {
                                 )
                             };
                             // SAFETY: `entity` is valid, `location` matches entity, bundle matches inserter
-                            unsafe { inserter.insert(entity, location, bundle) };
+                            unsafe {
+                                inserter.insert(
+                                    entity,
+                                    location,
+                                    bundle,
+                                    InsertMode::Replace,
+                                    #[cfg(feature = "track_change_detection")]
+                                    caller,
+                                )
+                            };
                             spawn_or_insert =
                                 SpawnOrInsert::Insert(inserter, location.archetype_id);
                         }
